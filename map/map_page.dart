@@ -1,61 +1,255 @@
-import 'package:flutter/cupertino.dart';
+// ignore_for_file: deprecated_member_use
+
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'dart:async';
 import 'map_filter.dart';
 import 'map_filter_dialog.dart';
 
-// 지도와 리스트를 보여주는 메인 페이지
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
 
   @override
-  State<MapPage> createState() => _MyPageState();
+  State<MapPage> createState() => _MapPageState();
 }
 
-class _MyPageState extends State<MapPage> {
-  // 하단 네비게이션 바의 현재 선택된 탭 인덱스 (0: 지도, 1: 리스트)
+class _MapPageState extends State<MapPage> {
+  // 기본 상태 변수들
   int currentItem = 0;
-
-  // 부동산 필터링을 위한 설정 객체
   MapFilter mapFilter = MapFilter();
-
-  // 필터 다이얼로그가 열려있는 동안 로딩 상태를 표시하기 위한 변수
   bool _isLoading = false;
+
+  // 지도 관련 변수들
+  GoogleMapController? _mapController;
+  final Completer<GoogleMapController> _controllerCompleter =
+      Completer<GoogleMapController>();
+
+  // 위치 관련 변수들
+  Position? _currentPosition;
+  bool _isLocationLoading = false;
+  String _locationStatus = "위치 서비스 준비 중";
+
+  // 마커 관리
+  final Set<Marker> _markers = <Marker>{};
+
+  // 광주 기본 위치
+  static const LatLng _defaultCenter = LatLng(35.1595, 126.8526);
+
+  // 초기 카메라 위치
+  static const CameraPosition _initialCamera = CameraPosition(
+    target: _defaultCenter,
+    zoom: 14.0,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    debugPrint("MapPage 초기화 시작");
+
+    // 안전한 위치 초기화
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _safeInitializeLocation();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    debugPrint("MapPage dispose 시작");
+    _mapController?.dispose();
+    super.dispose();
+  }
+
+  // 안전한 setState 호출
+  void _safeSetState(VoidCallback fn) {
+    if (mounted) {
+      setState(fn);
+    }
+  }
+
+  // 안전한 위치 초기화
+  Future<void> _safeInitializeLocation() async {
+    if (!mounted) return;
+
+    debugPrint("위치 초기화 시작");
+
+    _safeSetState(() {
+      _isLocationLoading = true;
+      _locationStatus = "위치 권한 확인 중";
+    });
+
+    try {
+      // 위치 서비스 확인
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _safeSetState(() {
+          _locationStatus = "위치 서비스가 비활성화됨";
+          _isLocationLoading = false;
+        });
+        _addDefaultMarker();
+        return;
+      }
+
+      // 권한 확인
+      LocationPermission permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        _safeSetState(() {
+          _locationStatus = "위치 권한이 거부됨";
+          _isLocationLoading = false;
+        });
+        _addDefaultMarker();
+        return;
+      }
+
+      // 현재 위치 가져오기
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+
+      if (!mounted) return;
+
+      _safeSetState(() {
+        _currentPosition = position;
+        _isLocationLoading = false;
+        _locationStatus =
+            "현재 위치: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}";
+      });
+
+      _addCurrentLocationMarker(position);
+      _moveToLocation(LatLng(position.latitude, position.longitude));
+    } catch (e) {
+      debugPrint("위치 가져오기 실패: $e");
+      _safeSetState(() {
+        _locationStatus = "위치를 가져올 수 없음";
+        _isLocationLoading = false;
+      });
+      _addDefaultMarker();
+    }
+  }
+
+  // 기본 마커 추가
+  void _addDefaultMarker() {
+    if (!mounted) return;
+
+    _safeSetState(() {
+      _markers.clear();
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('default'),
+          position: _defaultCenter,
+          infoWindow: const InfoWindow(title: '광주광역시', snippet: '기본 위치'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+        ),
+      );
+    });
+  }
+
+  // 현재 위치 마커 추가
+  void _addCurrentLocationMarker(Position position) {
+    if (!mounted) return;
+
+    _safeSetState(() {
+      _markers.clear();
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('current'),
+          position: LatLng(position.latitude, position.longitude),
+          infoWindow: const InfoWindow(title: '현재 위치', snippet: '내 위치'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+        ),
+      );
+    });
+  }
+
+  // 특정 위치로 카메라 이동
+  Future<void> _moveToLocation(LatLng location) async {
+    if (_mapController != null) {
+      await _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: location, zoom: 16.0),
+        ),
+      );
+    }
+  }
+
+  // 지도 생성 완료 콜백
+  void _onMapCreated(GoogleMapController controller) {
+    debugPrint("Google Map 생성 완료");
+    if (!mounted) return;
+
+    _mapController = controller;
+    if (!_controllerCompleter.isCompleted) {
+      _controllerCompleter.complete(controller);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 상단 앱바
       appBar: AppBar(
         title: const Text('Map Page'),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
         actions: [
-          // 검색/필터 버튼
+          // 위치 새로고침 버튼
           IconButton(
-            // 로딩 중일 때는 버튼 비활성화
+            onPressed: _isLocationLoading
+                ? null
+                : () {
+                    debugPrint("위치 새로고침 요청");
+                    _safeInitializeLocation();
+                  },
+            icon: _isLocationLoading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                : const Icon(Icons.my_location),
+            tooltip: '위치 새로고침',
+          ),
+
+          // 필터 버튼
+          IconButton(
             onPressed: _isLoading ? null : _openFilterDialog,
-            // 로딩 중이면 스피너 표시, 아니면 검색 아이콘 표시
             icon: _isLoading
                 ? const SizedBox(
                     width: 20,
                     height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
                   )
-                : const Icon(Icons.search),
+                : const Icon(Icons.filter_list),
+            tooltip: '필터 설정',
           ),
         ],
       ),
 
-      // 햄버거 메뉴 (좌측 드로어)
+      // 드로어
       drawer: Drawer(
         child: ListView(
           padding: EdgeInsets.zero,
           children: [
-            // 사용자 정보를 표시하는 헤더
-            const DrawerHeader(
-              decoration: BoxDecoration(color: Colors.blue),
+            DrawerHeader(
+              decoration: const BoxDecoration(color: Colors.blue),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  const Text(
                     '강홍규',
                     style: TextStyle(
                       color: Colors.white,
@@ -63,143 +257,233 @@ class _MyPageState extends State<MapPage> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Text(
+                  const Text(
                     'khkyu9799@gmail.com',
-                    style: TextStyle(fontSize: 16.0, color: Colors.white),
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _locationStatus,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                 ],
               ),
             ),
-            // 메뉴 항목들
-            ListTile(title: const Text('내가 선택한 아파트'), onTap: () {}),
-            ListTile(title: const Text('설정'), onTap: () {}),
+            ListTile(
+              leading: const Icon(Icons.apartment),
+              title: const Text('내가 선택한 아파트'),
+              onTap: () => Navigator.pop(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings),
+              title: const Text('설정'),
+              onTap: () => Navigator.pop(context),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.info),
+              title: Text('마커 수: ${_markers.length}'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.map),
+              title: Text('지도 상태: ${_mapController != null ? "로드됨" : "로딩 중"}'),
+            ),
           ],
         ),
       ),
 
-      // 메인 콘텐츠 영역 - 탭에 따라 지도 또는 리스트 표시
-      body: AnimatedSwitcher(
-        // 탭 전환 시 부드러운 애니메이션 효과 (300ms)
-        duration: const Duration(milliseconds: 300),
-        child: currentItem == 0
-            // 지도 탭이 선택된 경우 (현재는 빈 컨테이너로 placeholder)
-            ? Container(key: const ValueKey('map'))
-            // 리스트 탭이 선택된 경우
-            : ListView(key: const ValueKey('list')),
+      // 메인 콘텐츠
+      body: Column(
+        children: [
+          // 상태 표시 바
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            color: _isLocationLoading
+                ? Colors.orange.shade100
+                : Colors.green.shade100,
+            child: Row(
+              children: [
+                Icon(
+                  _isLocationLoading
+                      ? Icons.location_searching
+                      : Icons.location_on,
+                  size: 16,
+                  color: _isLocationLoading ? Colors.orange : Colors.green,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _locationStatus,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _isLocationLoading
+                          ? Colors.orange.shade800
+                          : Colors.green.shade800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // 지도/리스트 영역
+          Expanded(
+            child: IndexedStack(
+              index: currentItem,
+              children: [_buildMapView(), _buildListView()],
+            ),
+          ),
+        ],
       ),
 
-      // 하단 네비게이션 바 (지도/리스트 탭 전환)
+      // 하단 네비게이션
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: currentItem,
         onTap: (value) {
-          // 탭이 클릭되면 상태 업데이트하여 화면 전환
-          setState(() {
+          debugPrint("탭 변경: $value");
+          _safeSetState(() {
             currentItem = value;
           });
         },
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.map), label: 'map'),
-          BottomNavigationBarItem(icon: Icon(Icons.list), label: 'list'),
+          BottomNavigationBarItem(icon: Icon(Icons.map), label: '지도'),
+          BottomNavigationBarItem(icon: Icon(Icons.list), label: '목록'),
         ],
       ),
 
-      // 플로팅 액션 버튼 (현재 위치 검색)
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          // TODO: 현재 위치 기반 검색 기능 구현
+      // 플로팅 버튼
+      floatingActionButton: currentItem == 0
+          ? FloatingActionButton(
+              onPressed: () {
+                debugPrint("내 위치로 버튼 클릭");
+                if (_currentPosition != null) {
+                  _moveToLocation(
+                    LatLng(
+                      _currentPosition!.latitude,
+                      _currentPosition!.longitude,
+                    ),
+                  );
+                } else {
+                  _safeInitializeLocation();
+                }
+              },
+              backgroundColor: Colors.blue,
+              child: const Icon(Icons.my_location),
+            )
+          : null,
+    );
+  }
+
+  // 지도 뷰
+  Widget _buildMapView() {
+    debugPrint("지도 뷰 빌드");
+
+    return Container(
+      child: GoogleMap(
+        mapType: MapType.normal,
+        initialCameraPosition: _initialCamera,
+        onMapCreated: _onMapCreated,
+        markers: _markers,
+        myLocationEnabled: false, // 충돌 방지를 위해 비활성화
+        myLocationButtonEnabled: false,
+        compassEnabled: true,
+        mapToolbarEnabled: false,
+        zoomControlsEnabled: false,
+
+        onTap: (LatLng position) {
+          debugPrint("지도 클릭: ${position.latitude}, ${position.longitude}");
+          _addTemporaryMarker(position);
         },
-        label: const Text('이 위치로 검색하기'),
-        icon: const Icon(Icons.location_searching),
       ),
     );
   }
 
-  // 필터 다이얼로그를 여는 비동기 함수
+  // 임시 마커 추가
+  void _addTemporaryMarker(LatLng position) {
+    if (!mounted) return;
+
+    debugPrint("임시 마커 추가: ${position.latitude}, ${position.longitude}");
+
+    _safeSetState(() {
+      _markers.removeWhere((marker) => marker.markerId.value == 'temp');
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('temp'),
+          position: position,
+          infoWindow: InfoWindow(
+            title: '선택한 위치',
+            snippet:
+                '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}',
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueOrange,
+          ),
+        ),
+      );
+    });
+  }
+
+  // 리스트 뷰
+  Widget _buildListView() {
+    return ListView.builder(
+      itemCount: 10,
+      itemBuilder: (context, index) {
+        return ListTile(
+          leading: const Icon(Icons.apartment),
+          title: Text('부동산 ${index + 1}'),
+          subtitle: Text('광주시 ${index + 1}번지'),
+          trailing: const Icon(Icons.arrow_forward_ios),
+          onTap: () {
+            debugPrint("부동산 항목 클릭: $index");
+          },
+        );
+      },
+    );
+  }
+
+  // 필터 다이얼로그
   Future<void> _openFilterDialog() async {
-    // 로딩 상태 시작 - 버튼에 스피너 표시
-    setState(() {
+    if (!mounted) return;
+
+    debugPrint("필터 다이얼로그 열기");
+    _safeSetState(() {
       _isLoading = true;
     });
 
     try {
-      // 커스텀 페이지 트랜지션으로 부드러운 다이얼로그 열기
-      var result = await Navigator.of(context).push(
-        PageRouteBuilder(
-          // 실제 표시할 페이지 (필터 다이얼로그)
-          pageBuilder: (context, animation, secondaryAnimation) {
-            return MapFilterDialog(mapFilter: mapFilter);
-          },
-
-          // 페이지 전환 애니메이션 정의
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            // 페이드 인/아웃과 스케일 효과를 조합한 부드러운 애니메이션
-            return FadeTransition(
-              opacity: animation,
-              child: ScaleTransition(
-                // 0.8배에서 1.0배로 확대되면서 나타남
-                scale: Tween<double>(begin: 0.8, end: 1.0).animate(
-                  CurvedAnimation(
-                    parent: animation,
-                    // 부드러운 곡선 애니메이션 (급격하지 않은 자연스러운 효과)
-                    curve: Curves.easeOutCubic,
-                  ),
-                ),
-                child: child,
-              ),
-            );
-          },
-
-          // 애니메이션 지속 시간 설정
-          transitionDuration: const Duration(milliseconds: 300), // 열릴 때
-          reverseTransitionDuration: const Duration(milliseconds: 250), // 닫힐 때
-          // 다이얼로그 외부 터치로 닫기 가능
-          barrierDismissible: true,
-          // 배경 어둡게 처리
-          barrierColor: Colors.black54,
+      final result = await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => MapFilterDialog(mapFilter: mapFilter),
         ),
       );
 
-      // 필터 설정이 완료되고 결과가 반환된 경우
       if (result != null && mounted) {
-        setState(() {
-          // 새로운 필터 설정 적용
+        debugPrint("필터 적용: $result");
+        _safeSetState(() {
           mapFilter = result as MapFilter;
         });
 
-        // 사용자에게 필터 적용 완료 알림 (스낵바)
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('필터가 적용되었습니다'),
-            duration: const Duration(seconds: 2),
-            // 플로팅 스타일의 스낵바 (화면 하단에서 살짝 떠있는 형태)
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('필터가 적용되었습니다'),
+              duration: Duration(seconds: 2),
             ),
-          ),
-        );
+          );
+        }
       }
     } catch (e) {
-      // 오류 발생 시 에러 메시지 표시
+      debugPrint("필터 다이얼로그 오류: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('오류가 발생했습니다: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
+          SnackBar(content: Text('오류: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
-      // 작업 완료 후 로딩 상태 해제 (try-catch 구문과 관계없이 항상 실행)
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      _safeSetState(() {
+        _isLoading = false;
+      });
     }
   }
 }
