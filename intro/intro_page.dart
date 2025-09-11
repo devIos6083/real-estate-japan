@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:map_trade/map/map_page.dart';
+import 'package:map_trade/map/map_page.dart' hide TextStyle, Text, SizedBox;
 
 // 앱 시작 시 보여지는 인트로 페이지 (스플래시 스크린)
 // 인터넷 연결 상태를 확인하고 연결되면 메인 페이지로 이동
@@ -158,7 +158,7 @@ class _IntroPageState extends State<IntroPage> with TickerProviderStateMixin {
       builder: (BuildContext context) {
         return AlertDialog(
           // 다이얼로그 아이콘과 제목
-          title: const Row(
+          title: Row(
             children: [
               Icon(Icons.wifi_off, color: Colors.red),
               SizedBox(width: 8),
